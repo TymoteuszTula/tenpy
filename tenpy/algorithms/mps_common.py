@@ -1425,3 +1425,33 @@ class VariationalApplyMPO(VariationalCompression):
         if not self.eff_H.combine:
             th = th.combine_legs([['vL', 'p0'], ['p1', 'vR']], qconj=[+1, -1])
         return self.update_new_psi(th)
+
+class VariationalApplyMPO_PurMPO(VariationalApplyMPO):
+
+    def __init__(self, psi, U_MPO, options, **kwargs):
+        super().__init__(psi, U_MPO, options, **kwargs)
+
+    def init_env(self, U_MPO, resume_data=None, orthogonal_to=None):
+        """Initialize the environment.
+
+        Parameters
+        ----------
+        U_MPO : :class:`~tenpy.networks.mpo.MPO`
+            The MPO to be applied to the sate.
+        resume_data : dict
+            May contain `init_env_data`.
+        orthogonal_to :
+            Ignored.
+        """
+        if resume_data is None:
+            resume_data = {}
+        init_env_data = resume_data.get("init_env_data", {})
+        old_psi = self.psi.copy_pur()
+        start_env_sites = 0 if self.psi.finite else self.psi.L
+        start_env_sites = self.options.get("start_env_sites", start_env_sites)
+        if start_env_sites is not None:
+            init_env_data['start_env_sites'] = start_env_sites
+        # note: we need explicit `start_env_sites` since `bra` != `ket`, so we can't converge
+        # with MPOTransferMatrix.find_init_LP_RP
+        self.env = MPOEnvironment(self.psi, U_MPO, old_psi, **init_env_data)
+        self.reset_stats()

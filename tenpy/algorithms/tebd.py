@@ -747,3 +747,106 @@ class RandomUnitaryEvolution(TEBDEngine):
 
     def _calc_bond_eig(self):
         pass  # do nothing
+
+
+class TEBD_MPO(TEBDEngine):
+
+    def __init__(self, psi, model, options):
+        super().__init__(psi, model, options)
+        self._U_up = None
+        self._U_down = None
+        self._U_up_param = {}
+        self._U_down_param = {}
+
+    def calc_U(self, order, delta_t, type_evo='real', E_offset=None):
+        U_up_param = dict(order=order, delta_t=delta_t, type_evo=type_evo, E_offset=E_offset)
+        U_down_param = dict(order=order, delta_t=-delta_t, type_evo=type_evo, E_offset=E_offset)
+        if type_evo == 'real':
+            U_up_param['tau'] = delta_t
+            U_down_param['tau'] = -delta_t
+        elif type_evo == 'imag':
+            U_up_param['tau'] = -1j * delta_t
+            U_down_param['tau'] = -1j * delta_t
+        else:
+            raise ValueError('Invalid value for `type_evo`: ' + repr(type_evo))
+        if self._U_up_param == U_up_param and self._U_down_param == U_down_param:
+            return
+        self._U_up_param = U_up_param
+        self._U_down_param = U_down_param
+
+        L = self.psi.L
+        self._U_up = []
+        self._U_down = []
+        for dt in self.suzuki_trotter_time_steps(order):
+            U_up_bond = [
+                self._calc_U_bond(i_bond, dt * delta_t, type_evo, E_offset) for i_bond in range(L)
+            ]
+            if type_evo == 'real':
+                U_down_bond = [
+                    self._calc_U_bond(i_bond, -dt * delta_t, type_evo, E_offset) for i_bond in range(L)
+                ]
+            else:
+                U_down_bond = U_up_bond
+            self._U_up.append(U_up_bond)
+            self._U_down.append(U_down_bond)
+
+    
+    def update(self, N_steps):
+
+        trunc_err = TruncationError()
+        order = self._U_up_param['order']
+        for U_idx_dt, odd in self.suzuki_trotter_decomposition(order, N_steps):
+            trunc_err += self.update_step(U_idx_dt, odd)
+        self.evolved_time = self.evolved_time + N_steps * self._U_up_param['tau']
+        self.trunc_err = self.trunc_err + trunc_err
+        return trunc_err
+
+    def update_step(self, U_idx_dt, odd):
+        
+        Us_up = self._U_up[U_idx_dt]
+        Us_down = self._U_down[U_idx_dt]
+        trunc_err = TruncationError()
+        for i_bond in np.arange(int(odd) % 2, self.psi.L, 2):
+            if Us_up[i_bond] is None:
+                continue
+            self._update_index = (U_idx_dt, i_bond)
+            trunc_err += self.update_bond(i_bond, Us_up[i_bond], up=True)
+            trunc_err += self.update_bond(i_bond, Us_down[i_bond], up=False)
+        self._update_index = None
+        return trunc_err
+
+    def update_bond(self, i, U_bond, up=True):
+
+        i0, i1 = i-1, i
+
+        C = self.psi.get_theta(i0, n=2, formL=0.)
+        C = C.split_legs()
+        if up:
+            C = npc.tensordot(U_bond, C, axes=(['p0', 'p1'], ['p0*', 'p1*']))
+        else:
+            C = npc.tensordot(U_bond, C, axes=(['p0*', 'p1*'], ['p0', 'p1']))
+
+        C = C.combine_legs([['p0', 'p0*'], ['p1', 'p1*']])
+        C.itranspose(['wL', '(p0.p0*)', '(p1.p1*)', 'wR'])
+        theta = C.scale_axis(self.psi.get_SL(i0), 'wL')
+
+        theta = theta.combine_legs([('wL', '(p0.p0*)'), ('(p1.p1*)', 'wR')], qconj=[+1, -1])
+        U, S, V, trunc_err, renormalize = svd_theta(theta,
+                                                    self.trunc_params,
+                                                    [self.psi.get_B(i0, None).qtotal, None],
+                                                    inner_labels=['wR', 'wL'])
+
+        self.psi.norm *= renormalize
+        
+        B_R = V.split_legs(1).ireplace_label('(p1.p1*)', '(p.p*)')
+
+        B_L = npc.tensordot(C.combine_legs(('(p1.p1*)', 'wR'), pipes=theta.legs[1]),
+                        V.conj(),
+                        axes=['((p1.p1*).wR)', '((p1*.p1).wR*)'])
+        B_L.ireplace_labels(['wL*', '(p0.p0*)'], ['wR', '(p.p*)'])
+        B_L /= renormalize
+        self.psi.set_SR(i0, S)
+        self.psi.set_B(i0, B_L, form='B')
+        self.psi.set_B(i1, B_R, form='B')
+        self._trunc_err_bonds[i] = self._trunc_err_bonds[i] + trunc_err
+        return trunc_err

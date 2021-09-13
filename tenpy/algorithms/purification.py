@@ -497,3 +497,144 @@ class PurificationTEBD2(PurificationTEBD):
             trunc_err += self.update_bond(i_bond, Us[i_bond])
         self._update_index = None
         return trunc_err
+
+
+class PurificationTEBD_MPO(PurificationTEBD):
+
+    def __init__(self, psi, model, options):
+        super().__init__(psi, model, options)
+        self._U_up = None
+        self._U_down = None
+        self._U_up_param = {}
+        self._U_down_param = {}
+        self.is_current_up = True
+        
+
+    def calc_U(self, order, delta_t, type_evo='real', E_offset=None):
+        tebd.TEBD_MPO.calc_U(self, order, delta_t, type_evo, E_offset)
+        self._guess_U_disent = [[None] * len(Us) for Us in self._U_up]
+        self._U_param["type_evo"] = 'real'
+
+    def update(self, N_steps):
+        return tebd.TEBD_MPO.update(self, N_steps)
+
+    def update_step(self, U_idx_dt, odd):
+        return tebd.TEBD_MPO.update_step(self, U_idx_dt, odd)
+
+    def update_bond(self, i, U_bond, up=True):
+
+        i0, i1 = i-1, i
+
+        C = self.psi.get_theta(i0, n=2, formL=0.)
+        C = C.split_legs()
+
+        if up:
+            C = npc.tensordot(U_bond, C, axes=(['p0', 'p1'], ['p0*', 'p1*']))
+            C.itranspose(['wL', 'p0', 'p0*', 'q0', 'q0*', 'p1', 'p1*', 'q1', 'q1*', 'wR'])
+        else:
+            C = npc.tensordot(U_bond, C, axes=(['p0*', 'p1*'], ['p0', 'p1']))
+            C.itranspose(['wL', 'p0', 'p0*', 'q0', 'q0*', 'p1', 'p1*', 'q1', 'q1*', 'wR'])
+
+        C, U_disent = self.disentangle(C, up)
+
+        theta = C.scale_axis(self.psi.get_SL(i0), 'wL')
+        theta = theta.combine_legs([['p0', 'p0*'], ['q0', 'q0*'], ['p1', 'p1*'], ['q1', 'q1*']])
+        C = C.combine_legs([['p0', 'p0*'], ['q0', 'q0*'], ['p1', 'p1*'], ['q1', 'q1*']])
+        theta = theta.combine_legs([('wL', '(p0.p0*)', '(q0.q0*)'), ('wR', '(p1.p1*)', '(q1.q1*)')], qconj=[+1, -1])
+        U, S, V, trunc_err, renormalise = svd_theta(theta,
+                                                    self.trunc_params,
+                                                    inner_labels=['wR', 'wL'])
+        self.psi.norm *= renormalise * renormalise
+        B_R = V.split_legs(1).ireplace_labels(['(p1.p1*)', '(q1.q1*)'], ['(p.p*)', '(q.q*)'])
+        B_R.itranspose(['wL', '(p.p*)', '(q.q*)', 'wR'])
+        B_L = npc.tensordot(C.combine_legs(('wR', '(p1.p1*)', '(q1.q1*)'), pipes=theta.legs[1]),
+                        V.conj(),
+                        axes=['(wR.(p1.p1*).(q1.q1*))', '(wR*.(p1*.p1).(q1*.q1))'])
+        B_L.ireplace_labels(['wL*', '(p0.p0*)', '(q0.q0*)'], ['wR', '(p.p*)', '(q.q*)'])
+        B_L /= renormalise
+        self.psi.set_SR(i0, S)
+        self.psi.set_B(i0, B_L, form='B')
+        self.psi.set_B(i1, B_R, form='B')
+        self._trunc_err_bonds[i] = self._trunc_err_bonds[i] + trunc_err
+        return trunc_err
+        
+        # theta = self.psi.get_theta(i0, n=2)
+        # theta = theta.split_legs()
+        # if up:
+        #     theta = tensordot(U_bond, theta, axes=(['p0', 'p1'], ['p0*', 'p1*']))
+        # else:
+        #     theta = tensordot(U_bond, theta, axes=(['p0*', 'p1*'], ['p0', 'p1']))
+
+        # theta, U_disent = self.disentangle(theta, up)
+
+        # print(U_disent)
+
+        # theta = theta.combine_legs([['p0', 'p0*'], ['q0', 'q0*'], ['p1', 'p1*'], ['q1', 'q1*']])
+
+        # theta = theta.combine_legs([('wL', '(p0.p0*)', '(q0.q0*)'), ('wR', '(p1.p1*)', '(q1.q1*)')], qconj=[+1, -1])
+        # U, S, V, trunc_err, renormalize = svd_theta(theta,
+        #                                             self.trunc_params,
+        #                                             inner_labels=['wR', 'wL'])
+
+        # self.psi.norm *= renormalize
+
+        # B_R = V.split_legs(1).ireplace_labels(['(p1.p1*)', '(q1.q1*)'], ['(p.p*)', '(q.q*)'])
+        # C = self.psi.get_theta(i0, n=2)
+        # C = C.split_legs()
+        # if up:
+        #     C = tensordot(U_bond, C, axes=(['p0', 'p1'], ['p0*', 'p1*']))
+        #     if U_disent is not None:
+        #         C = tensordot(U_disent, C, axes=(['q0', 'q1'], ['q0*', 'q1*']))
+        # else:
+        #     C = tensordot(U_bond, C, axes=(['p0*', 'p1*'], ['p0', 'p1']))
+        #     if U_disent is not None:
+        #         C = tensordot(U_disent, C, axes=(['q0*', 'q1*'], ['q0', 'q1']))
+
+        
+
+
+    def disentangle(self, theta, up):
+
+        theta_cut = theta.combine_legs([['p0', 'p0*'], ['p1', 'p1*']])
+        theta_cut.ireplace_labels(['(p0.p0*)', '(p1.p1*)'], ['p0', 'p1'])
+
+        U_cut = None
+
+        self.is_current_up = up
+
+        if up:
+            for d_i in range(self.psi.sites[0].dim):
+                for d_j in range(self.psi.sites[0].dim):
+                    theta_temp = theta_cut.take_slice([d_i, d_j], ['q0', 'q1']).replace_labels(('q0*', 'q1*'), ('q0', 'q1'))
+                    theta_new, U_new = self.used_disentangler(theta_temp)
+                    theta_new.ireplace_labels(('q0', 'q1'), ('q0*', 'q1*'))
+                    theta_new.itranspose(['wL', 'p0', 'q0*', 'p1', 'q1*', 'wR'])
+                    theta_cut[:, :, d_i, :, :, d_j, :, :] = theta_new
+                    if d_i == 0 and d_j == 0 and U_new is not None:
+                        U_cut = U_new.copy()
+                        U_cut = U_cut.add_leg(self.psi.temp_leg_charge2, 0, axis=0, label='q1u')
+                        U_cut = U_cut.add_leg(self.psi.temp_leg_charge2, 0, axis=0, label='q0u')
+                    elif U_new is not None:
+                        U_cut[d_i, d_j, :, :] = U_new
+        else:
+            for d_i in range(self.psi.sites[0].dim):
+                for d_j in range(self.psi.sites[0].dim):
+                    theta_temp = theta_cut.take_slice([d_i, d_j], ['q0*', 'q1*'])
+                    theta_new, U_new = self.used_disentangler(theta_temp)
+                    theta_new.itranspose(['wL', 'p0', 'q0', 'p1', 'q1', 'wR'])
+                    theta_cut[:, :, :, d_i, :, :, d_j, :] = theta_new
+                    if d_i == 0 and d_j == 0 and U_new is not None:
+                        U_cut = U_new.copy()
+                        U_cut = U_cut.add_leg(self.psi.temp_leg_charge1, 0, axis=0, label='q1d')
+                        U_cut = U_cut.add_leg(self.psi.temp_leg_charge1, 0, axis=0, label='q0d')
+                    elif U_new is not None:
+                        U_cut[d_i, d_j, :, :] = U_new
+
+        theta_cut.ireplace_labels(['p0', 'p1'], ['(p0.p0*)', '(p1.p1*)'])
+        theta_cut = theta_cut.split_legs()
+
+        U_idx_dt, i = self._update_index
+        if U_idx_dt is not None:
+            self._guess_U_disent[U_idx_dt][i] = U_cut
+
+        return theta_cut, U_cut

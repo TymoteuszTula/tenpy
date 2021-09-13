@@ -110,6 +110,23 @@ class BackwardDisentangler(Disentangler):
         return theta, U
 
 
+class BackwardDisentangler_MPO(BackwardDisentangler):
+
+    def __init__(self, parent):
+        super().__init__(parent)
+
+    def __call__(self, theta):
+        eng = self.parent
+        U_idx_dt, i = eng._update_index
+        if eng.is_current_up:
+            U = eng._U_up[U_idx_dt][i].conj()
+        else:
+            U = eng._U_down[U_idx_dt][i].conj()
+        U.ireplace_labels(['p0*', 'p1*', 'p0', 'p1'], ['q0', 'q1', 'q0*', 'q1*'])
+        theta = npc.tensordot(U, theta, axes=[['q0*', 'q1*'], ['q0', 'q1']])
+        return theta, U 
+
+
 class RenyiDisentangler(Disentangler):
     """Iterative find `U` which minimized the second Renyi entropy.
 
@@ -578,7 +595,8 @@ disentanglers_atom_parse_dict = {
     'graddesc': GradientDescentDisentangler,
     'noise': NoiseDisentangler,
     'last': LastDisentangler,
-    'diag': DiagonalizeDisentangler
+    'diag': DiagonalizeDisentangler,
+    'backwardsMPO': BackwardDisentangler_MPO
 }
 """Dictionary to translate the 'disentangle' TEBD parameter into a :class:`Disentangler`.
 

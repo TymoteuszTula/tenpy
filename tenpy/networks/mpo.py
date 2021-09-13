@@ -45,6 +45,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from ..linalg import np_conserved as npc
+from ..linalg.charges import LegCharge, ChargeInfo
 from ..linalg.sparse import FlatLinearOperator
 from .site import group_sites, Site
 from ..tools.string import vert_join
@@ -52,7 +53,7 @@ from .mps import MPS as _MPS  # only for MPS._valid_bc
 from .mps import MPSEnvironment
 from .terms import OnsiteTerms, CouplingTerms, MultiCouplingTerms
 from ..tools.misc import add_with_None_0
-from ..tools.math import lcm
+from ..tools.math import lcm, entropy
 from ..tools.params import asConfig
 from ..algorithms.truncation import TruncationError, svd_theta
 
@@ -872,6 +873,29 @@ class MPO:
         elif method == 'variational':
             from ..algorithms.mps_common import VariationalApplyMPO
             return VariationalApplyMPO(psi, self, options).run()
+        elif method == 'variational_pur':
+            from ..algorithms.purification import PurificationApplyMPO
+            return PurificationApplyMPO(psi, self, options).run()
+        elif method == 'variational_pur2':
+            from ..algorithms.mps_common import VariationalApplyMPO_PurMPO
+            for i in range(self.L):
+                self._W[i] = self._W[i].combine_legs([['p', 'q'], ['p*', 'q*']])
+                self._W[i].ireplace_labels(['(p.q)', '(p*.q*)'], ['p', 'p*'])
+                psi._B[i] = psi._B[i].combine_legs([['p', 'q']])
+                psi._B[i].ireplace_label('(p.q)', 'p')
+                psi._B[i]._labels = ['vL', 'p', 'vR']
+            psi._B_labels = ['vL', 'p', 'vR']
+            psi._p_label = ['p']    
+            A = VariationalApplyMPO_PurMPO(psi, self, options).run()
+            for i in range(self.L):
+                self._W[i].ireplace_labels(['p', 'p*'], ['(p.q)', '(p*.q*)'])
+                self._W[i] = self._W[i].split_legs()
+                psi._B[i].ireplace_label('p', '(p.q)')
+                psi._B[i] = psi._B[i].split_legs()
+                psi._B[i]._labels = ['vL', 'p', 'q', 'vR']
+            psi._B_labels = ['vL', 'p', 'q', 'vR']
+            psi._p_label = ['p', 'q']
+            return A
         elif method == 'zip_up':
             trunc_err = self.apply_zipup(psi, options)
             return trunc_err + psi.compress_svd(trunc_params)
@@ -2483,3 +2507,263 @@ def _mpo_graph_state_order(key):
     # fallback: compare strings
         return (-1, key)
     return (-1, str(key))
+
+class MPO_as_MPS(MPO):
+
+    def __init__(self,
+                 sites,
+                 Ws,
+                 bc='finite',
+                 IdL=None,
+                 IdR=None,
+                 max_range=None,
+                 explicit_plus_hc=False):
+        super().__init__(sites, Ws, bc, IdL, IdR, max_range, explicit_plus_hc)
+        self._S = [np.array([1.])]
+        self._B = []
+        self._B_labels = ['wL', '(p.p*)', 'wR']
+        self.norm = 1.
+        for i in range(self.L):
+            Ws[i] = Ws[i].combine_legs(['p', 'p*'])
+        form = [None] * self.L
+
+        self.form = self._parse_form(form)
+
+        new_form = ['B'] * self.L
+        W = Ws[-1]
+        for i in range(self.L - 2, -1, -1):
+            W = W.combine_legs([['(p.p*)', 'wR']])
+            U, S, VH = npc.svd(W, inner_labels= ['wR', 'wL'])
+            self._S.insert(0, S)
+            self._B.insert(0, VH.split_legs())
+            W = Ws[i]
+            W = npc.tensordot(W, U, axes=('wR', 'wL'))
+            W.iscale_axis(S, 'wR')
+        if bc == "finite":
+            self._B.insert(0, W)
+            self._S.insert(0, np.array([1.]))
+            new_form[0] = 'Th'
+        elif bc == "infinite":
+            # Infinite won't work with TEBD (not a PBC)
+            W = W.combine_legs([['(p.p*)', 'wR']])
+            U, S, VH = npc.svd(W, inner_labels= ['wR', 'wL'])
+            self._S.insert(0, S)
+            self._B.insert(0, VH.split_legs())
+            W = self._B[self.L - 1].copy()
+            W = npc.tensordot(W, U, axes=('wR', 'wL'))
+            W.iscale_axis(S, 'wR')
+            self.set_B(self.L-1, W, form='Th')
+            self.set_SR(self.L-1, S)
+            new_form[self.L - 1] = 'B'
+
+        self.form = self._parse_form(new_form)
+
+
+    @property
+    def nontrivial_bonds(self):
+        if self.bc == 'finite':
+            return slice(1, self.L)
+        elif self.bc == 'segment':
+            return slice(0, self.L + 1)
+        elif self.bc == 'infinite':
+            return slice(0, self.L)
+
+    def entanglement_entropy(self, n=1, bonds=None, for_matrix_S=False):
+        if bonds is None:
+            nt = self.nontrivial_bonds
+            bonds = range(nt.start, nt.stop)
+        res = []
+        for ib in bonds:
+            s = self._S[ib]
+            res.append(entropy(s**2, n))
+        # _S[ib] as a multidimensional matrix not included
+        return np.array(res)
+
+    def get_theta(self, i, n=2, cutoff=1.e-16, formL=1., formR=1.):
+        i = self._to_valid_index(i)
+        for j in range(i, i + n):
+            if self.form[j % self.L] is None:
+                raise ValueError("can't calculate theta for non-canonical form")
+        if n == 1:
+            return self.get_B(i, (1., 1.), True, cutoff, '0')
+        elif n < 1:
+            raise ValueError('n needs to be larger than 1')
+        # n >= 2: contract's some B's
+        theta = self.get_B(i, (formL, None), False, cutoff=cutoff, label_p='0')
+        _, old_fR = self.form[i]
+        for k in range(1, n):
+            j = self._to_valid_index(i + k)
+            new_fR = None if k + 1 < n else formR
+            B = self.get_B(j, (1. - old_fR, new_fR), False, cutoff, label_p=str(k))
+            _, old_fR = self.form[j]
+            theta = npc.tensordot(theta, B, axes=['wR', 'wL'])
+        return theta
+    
+    def get_B(self, i, form='B', copy=False, cutoff=1.e-16, label_p=None):
+        i = self._to_valid_index(i)
+        new_form = self._to_valid_form(form)
+        old_form = self.form[i]
+        B = self._B[i]
+        if copy:
+            B = B.copy()
+        if new_form is not None and old_form != new_form:
+            if old_form is None:
+                raise ValueError("Can't convert form of non-canonical state!")
+            if new_form[0] is not None and new_form[0] - old_form[0] != 0.:
+                B = self._scale_axis_B(B, self.get_SL(i), new_form[0] - old_form[0], 'wL', cutoff)
+            if new_form[1] is not None and new_form[1] - old_form[1] != 0.:
+                B = self._scale_axis_B(B, self.get_SR(i), new_form[1] - old_form[1], 'wR', cutoff)
+        if label_p is not None:
+            B = B.replace_label('(p.p*)', '(p{}.p{}*)'.format(label_p, label_p))
+        return B
+
+    def _to_valid_form(self, form):
+        if isinstance(form, tuple):
+            return form
+        return _MPS._valid_forms[form]
+
+    def get_SL(self, i):
+        return _MPS.get_SL(self, i)
+
+    def _parse_form(self, form):
+        return _MPS._parse_form(self, form)
+
+    def get_SR(self, i):
+        return _MPS.get_SR(self, i)
+
+    def set_SL(self, i, S):
+        _MPS.set_SL(self, i, S)
+
+    def set_SR(self, i, S):
+        _MPS.set_SR(self, i, S)
+
+    def set_B(self, i, B, form='B'):
+        _MPS.set_B(self, i, B, form)
+
+    def _scale_axis_B(self, B, S, form_diff, axis_B, cutoff):
+        if form_diff == 0.:
+            return B
+        if not isinstance(S, npc.Array):
+            if form_diff == -1:
+                S = 1. / S
+            elif form_diff != 1.:
+                S = S**form_diff
+            return B.scale_axis(S, axis_B)
+
+    def update_Ws(self):
+        for i in range(self.L):
+            self._W[i] = self._B[i].split_legs().itranspose(['wL', 'wR', 'p', 'p*'])
+            #self._W[i].iscale_axis(self._S[i+1]**(-1/2), 'wR')
+            #self._W[i].iscale_axis(self._S[i]**(1/2), 'wL')
+
+class PurificationMPO_as_MPS(MPO_as_MPS):
+
+    def __init__(self,
+                 sites,
+                 Ws,
+                 bc='finite',
+                 IdL=None,
+                 IdR=None,
+                 max_range=None,
+                 explicit_plus_hc=False):
+        MPO.__init__(self, sites, Ws, bc, IdL, IdR, max_range, explicit_plus_hc)
+        self._S = [np.array([1.])]
+        self._B = []
+        self._B_labels = ['wL', '(p.p*)', '(q.q*)', 'wR']
+        self.norm = 1.
+
+        self.temp_leg_charge1 = LegCharge(ChargeInfo([], []), np.array([0, sites[0].dim]), np.array([[]]), qconj=1)
+        self.temp_leg_charge2 = LegCharge(ChargeInfo([], []), np.array([0, sites[0].dim]), np.array([[]]), qconj=-1)
+        for i in range(self.L):
+            W = Ws[i].add_leg(self.temp_leg_charge1, 0, axis=0, label='q')
+            W = W.add_leg(self.temp_leg_charge2, 0, axis=0, label='q*')
+            for d in range(sites[0].dim):
+                W[d, d] = Ws[i]
+            W.itranspose(['wL', 'wR', 'p', 'p*', 'q', 'q*'])
+            self.set_W(i, W)
+            Ws[i] = W.combine_legs([['p', 'p*'], ['q', 'q*']])
+        form = [None] * self.L
+
+        self.form = self._parse_form(form)
+
+        new_form = ['B'] * self.L
+        W = Ws[-1]
+        for i in range(self.L - 2, -1, -1):
+            W = W.combine_legs([['(p.p*)', '(q.q*)', 'wR']])
+            U, S, VH = npc.svd(W, inner_labels=['wR', 'wL'])
+            self._S.insert(0, S)
+            self._B.insert(0, VH.split_legs())
+            W = Ws[i]
+            W = npc.tensordot(W, U, axes=('wR', 'wL'))
+            W.iscale_axis(S, 'wR')
+        if bc == "finite":
+            self._B.insert(0, W)
+            self._S.insert(0, np.array([1.]))
+            new_form[0] = 'Th'
+        elif bc == "infinite":
+            W = W.combine_legs([['(p.p*)', '(q.q*)', 'wR']])
+            U, S, VH = npc.svd(W, inner_labels=['wR', 'wL'])
+            self._S.insert(0, S)
+            self._B.insert(0, VH.split_legs())
+            W = self._B[self.L - 1].copy()
+            W = npc.tensordot(W, U, axes=('wR', 'wL'))
+            W.iscale_axis(S, 'wR')
+            self.set_B(self.L-1, W)
+            self.set_SR(self.L-1, S)
+            new_form[self.L - 1] = 'Th'
+
+        self.form = self._parse_form(new_form)
+        
+
+    def get_B(self, i, form='B', copy=False, cutoff=1.e-16, label_p=None):
+        i = self._to_valid_index(i)
+        new_form = self._to_valid_form(form)
+        old_form = self.form[i]
+        B = self._B[i]
+        if copy:
+            B = B.copy()
+        if new_form is not None and old_form != new_form:
+            if old_form is None:
+                raise ValueError("Can't convert form of non-canonical state!")
+            if new_form[0] is not None and new_form[0] - old_form[0] != 0.:
+                B = self._scale_axis_B(B, self.get_SL(i), new_form[0] - old_form[0], 'wL', cutoff)
+            if new_form[1] is not None and new_form[1] - old_form[1] != 0.:
+                B = self._scale_axis_B(B, self.get_SR(i), new_form[1] - old_form[1], 'wR', cutoff)
+        if label_p is not None:
+            B = B.replace_label('(p.p*)', '(p{}.p{}*)'.format(label_p, label_p))
+            B = B.replace_label('(q.q*)', '(q{}.q{}*)'.format(label_p, label_p))
+        return B
+
+    def update_Ws(self):
+        for i in range(self.L):
+            self._W[i] = self._B[i].split_legs().itranspose(['wL', 'wR', 'p', 'p*', 'q', 'q*'])
+
+    def apply_naively(self, psi):
+        bc = psi.bc
+        if bc != self.bc:
+            raise ValueError("Boundary conditions of MPS and MPO are not the same")
+        if psi.L != self.L:
+            raise ValueError("Length of MPS and MPO not the same")
+        for i in range(psi.L):
+            B = npc.tensordot(psi.get_B(i, 'B'), self.get_W(i), axes=(['p', 'q'], ['p*', 'q*']))
+            if i == 0 and bc == 'finite':
+                B = B.take_slice(self.get_IdL(i), 'wL')
+                B = B.combine_legs(['wR', 'vR'], qconj=[-1])
+                B.ireplace_label('(wR.vR)', 'vR')
+                B.legs[B.get_leg_index('vR')] = B.get_leg('vR').to_LegCharge()
+            elif i == psi.L - 1 and bc == 'finite':
+                B = B.take_slice(self.get_IdR(i), 'wR')
+                B = B.combine_legs(['wL', 'vL'], qconj=[+1])
+                B.ireplace_label('(wL.vL)', 'vL')
+                B.legs[B.get_leg_index('vL')] = B.get_leg('vL').to_LegCharge()
+            else:
+                B = B.combine_legs([['wL', 'vL'], ['wR', 'vR']], qconj=[+1, -1])
+                B.ireplace_labels(['(wL.vL)', '(wR.vR)'], ['vL', 'vR'])
+                B.legs[B.get_leg_index('vR')] = B.get_leg('vR').to_LegCharge()
+                B.legs[B.get_leg_index('vL')] = B.get_leg('vL').to_LegCharge()
+            psi.set_B(i, B, 'B')
+        
+        S0 = np.ones(psi.get_B(0, None).get_leg('vL').ind_len)
+        psi.set_SL(0, S0)
+        for i in range(psi.L):
+            psi.set_SR(i, np.ones(psi.get_B(i, None).get_leg('vR').ind_len))

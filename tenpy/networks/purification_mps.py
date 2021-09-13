@@ -111,6 +111,7 @@ import itertools
 from .mps import MPS
 from ..linalg import np_conserved as npc
 from ..tools.math import entropy
+from ..algorithms.truncation import TruncationError, svd_theta
 
 __all__ = ['PurificationMPS']
 
@@ -444,7 +445,7 @@ class PurificationMPS(MPS):
 
     def _get_p_label(self, s, star=False):
         """return  self._p_label with additional string `s`."""
-        return ['p' + s, 'q' + s]
+        return [lbl + s for lbl in self._p_label]
 
     def _get_p_labels(self, ks, star=False):
         """join ``self._get_p_label(str(k) {+'*'} ) for k in range(ks)`` to a single list."""
@@ -452,3 +453,102 @@ class PurificationMPS(MPS):
             return [lbl + str(k) + '*' for k in range(ks) for lbl in self._p_label]
         else:
             return [lbl + str(k) for k in range(ks) for lbl in self._p_label]
+
+    def compress_svd(self, trunc_par):
+        """Compress `self` with a single sweep of SVDs; in place. Works with auxillary indices.
+
+        Perform a single right-sweep of QR/SVD without truncation, followed by a left-sweep with
+        truncation, very much like :meth:`canonical_form_finite`.
+
+        .. warning ::
+            In case of a strong compression, this does not find the optimal, global solution.
+
+        Parameters
+        ----------
+        trunc_par : dict
+            Parameters for truncation, see :cfg:config:`truncation`.
+        """
+        trunc_err = TruncationError()
+        if self.bc == 'finite':
+            # Do QR starting from the left
+            B = self.get_B(0, form='Th')
+            for i in range(self.L - 1):
+                B = B.combine_legs(['vL', 'p', 'q'])
+                q, r = npc.qr(B, inner_labels=['vR', 'vL'])
+                B = q.split_legs()
+                self.set_B(i, B, form=None)
+                B = self.get_B(i + 1, form='B')
+                B = npc.tensordot(r, B, axes=('vR', 'vL'))
+            # Do SVD from right to left & truncate
+            for i in range(self.L - 1, 0, -1):
+                B = B.combine_legs(['p', 'q', 'vR'])
+                U, S, VH, err, norm_new = svd_theta(B, trunc_par)
+                trunc_err += err
+                self.norm *= norm_new
+                VH = VH.split_legs()
+                self.set_B(i, VH, form='B')
+                B = self.get_B(i - 1, form=None)
+                B = npc.tensordot(B, U, axes=('vR', 'vL'))
+                B.iscale_axis(S, 'vR')
+                self.set_SL(i, S)
+            self.set_B(0, B, form='Th')
+        elif self.bc == 'infinite':
+            for i in range(self.L):
+                theta = self.get_theta(i, n=2)
+                theta = theta.combine_legs([['vL', 'p0', 'q0'], ['p1', 'q1', 'vR']], qconj=[+1, -1])
+                self.set_svd_theta(i, theta, update_norm=False)
+            for i in range(self.L - 1, -1, -1):
+                theta = self.get_theta(i, n=2)
+                theta = theta.combine_legs([['vL', 'p0', 'q0'], ['p1', 'q1', 'vR']], qconj=[+1, -1])
+                trunc_err += self.set_svd_theta(i, theta, trunc_par, update_norm=False)
+        else:
+            raise NotImplementedError("unsupported boundary conditions " + repr(self.bc))
+        return trunc_err
+
+    def set_svd_theta(self, i, theta, trunc_par=None, update_norm=False):
+        """SVD a two-site wave function `theta` and save it in `self`. Works with auxillary indices.
+        
+        Parameters
+        ----------
+        i : int
+            `theta` is the wave function on sites `i`, `i` + 1.
+        theta : :class:`~tenpy.linalg.np_conserved.Array`
+            The two-site wave function with labels combined into ``"(vL.p0.q0)", "(p1.q1.vR)"``,
+            ready for svd
+        trunc_par : None | dict
+            Parameters for truncation, see :cfg:config:`truncation`.
+            If ``None``, no truncation is done.
+        update_norm : bool
+            If ``True``, multiply the norm of `theta` into :attr:`norm`.
+        """
+        i0 = self._to_valid_index(i)
+        i1 = self._to_valid_index(i0 + 1)
+        self.dtype = np.find_common_type([self.dtype, theta.dtype], [])
+        qtotal_LR = [self._B[i0].qtotal, None]
+        if trunc_par is None:
+            U, S, VH = npc.svd(theta, qtotal_LR=qtotal_LR, inner_labels=['vR', 'vL'])
+            renorm = np.linalg.norm(S)
+            S /= renorm
+            err = None
+            if update_norm:
+                self.norm *= renorm
+        else:
+            U, S, VH, err, renorm = svd_theta(theta, trunc_par, qtotal_LR)
+            if update_norm:
+                self.norm *= renorm
+        U = U.split_legs().ireplace_labels(['p0', 'q0'], ['p', 'q'])
+        VH = VH.split_legs().ireplace_labels(['p1', 'q1'], ['p', 'q'])
+        self._B[i0] = U.itranspose(self._B_labels)
+        self.form[i0] = self._valid_forms['A']
+        self._B[i1] = VH.itranspose(self._B_labels)
+        self.form[i1] = self._valid_forms['B']
+        self.set_SR(i, S)
+        return err
+
+    def copy_pur(self):
+
+        cp = MPS(self.sites, self._B, self._S, self.bc, self.form, self.norm)
+        cp.grouped = self.grouped
+        cp._transfermatrix_keep = self._transfermatrix_keep
+        cp.segment_boundaries = self.segment_boundaries
+        return cp
