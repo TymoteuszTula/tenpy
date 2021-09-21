@@ -879,9 +879,9 @@ class MPO:
         elif method == 'variational_pur2':
             from ..algorithms.mps_common import VariationalApplyMPO_PurMPO
             for i in range(self.L):
-                self._W[i] = self._W[i].combine_legs([['p', 'q'], ['p*', 'q*']])
+                self._W[i] = self._W[i].combine_legs([['p', 'q'], ['p*', 'q*']], qconj=[+1, -1])
                 self._W[i].ireplace_labels(['(p.q)', '(p*.q*)'], ['p', 'p*'])
-                psi._B[i] = psi._B[i].combine_legs([['p', 'q']])
+                psi._B[i] = psi._B[i].combine_legs([['p', 'q']], qconj=[+1])
                 psi._B[i].ireplace_label('(p.q)', 'p')
                 psi._B[i]._labels = ['vL', 'p', 'vR']
             psi._B_labels = ['vL', 'p', 'vR']
@@ -2617,6 +2617,13 @@ class MPO_as_MPS(MPO):
             B = B.replace_label('(p.p*)', '(p{}.p{}*)'.format(label_p, label_p))
         return B
 
+    def deep_copy(self):
+        """Return deep copy of `self`.
+        """
+        Ws = [self._W[i].copy() for i in range(self.L)]
+        cp = self.__class__(self.sites, Ws, self.bc, self.IdL, self.IdR, self.max_range, self.explicit_plus_hc)
+        return cp
+
     def _to_valid_form(self, form):
         if isinstance(form, tuple):
             return form
@@ -2672,16 +2679,22 @@ class PurificationMPO_as_MPS(MPO_as_MPS):
         self._B_labels = ['wL', '(p.p*)', '(q.q*)', 'wR']
         self.norm = 1.
 
-        self.temp_leg_charge1 = LegCharge(ChargeInfo([], []), np.array([0, sites[0].dim]), np.array([[]]), qconj=1)
-        self.temp_leg_charge2 = LegCharge(ChargeInfo([], []), np.array([0, sites[0].dim]), np.array([[]]), qconj=-1)
+        self.temp_leg_charge1 = sites[0].leg.copy()
+        self.temp_leg_charge2 = sites[0].leg.copy()
+        self.temp_leg_charge2.qconj = -1
+        #self.temp_leg_charge1 = LegCharge(ChargeInfo([], []), np.array([0, sites[0].dim]), np.array([[]]), qconj=1)
+        #self.temp_leg_charge2 = LegCharge(ChargeInfo([], []), np.array([0, sites[0].dim]), np.array([[]]), qconj=-1)
         for i in range(self.L):
-            W = Ws[i].add_leg(self.temp_leg_charge1, 0, axis=0, label='q')
-            W = W.add_leg(self.temp_leg_charge2, 0, axis=0, label='q*')
-            for d in range(sites[0].dim):
-                W[d, d] = Ws[i]
-            W.itranspose(['wL', 'wR', 'p', 'p*', 'q', 'q*'])
+            if 'q' not in Ws[i].get_leg_labels():
+                W = Ws[i].add_leg(self.temp_leg_charge2, 0, axis=0, label='q')
+                W = W.add_leg(self.temp_leg_charge1, 0, axis=0, label='q*')
+                for d in range(sites[0].dim):
+                    W[d, d] = Ws[i]
+                W.itranspose(['wL', 'wR', 'p', 'p*', 'q', 'q*'])
+            else:
+                W = Ws[i]
             self.set_W(i, W)
-            Ws[i] = W.combine_legs([['p', 'p*'], ['q', 'q*']])
+            Ws[i] = W.combine_legs([['p', 'p*'], ['q', 'q*']], qconj=[+1, -1])
         form = [None] * self.L
 
         self.form = self._parse_form(form)

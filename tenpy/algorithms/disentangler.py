@@ -110,10 +110,13 @@ class BackwardDisentangler(Disentangler):
         return theta, U
 
 
-class BackwardDisentangler_MPO(BackwardDisentangler):
+class BackwardDisentangler_MPO(Disentangler):
 
     def __init__(self, parent):
-        super().__init__(parent)
+        self.parent = parent
+        from . import purification
+        if not isinstance(parent, purification.PurificationTEBD_MPO):
+            raise ValueError("BackwardsDisentangler_MPO works only with PurificationTEBD_MPO")
 
     def __call__(self, theta):
         eng = self.parent
@@ -596,7 +599,7 @@ disentanglers_atom_parse_dict = {
     'noise': NoiseDisentangler,
     'last': LastDisentangler,
     'diag': DiagonalizeDisentangler,
-    'backwardsMPO': BackwardDisentangler_MPO
+    'MPObackwards': BackwardDisentangler_MPO
 }
 """Dictionary to translate the 'disentangle' TEBD parameter into a :class:`Disentangler`.
 
