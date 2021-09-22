@@ -607,8 +607,8 @@ class PurificationTEBD_MPO(PurificationTEBD):
             for d_i in range(self.psi.sites[0].dim):
                 for d_j in range(self.psi.sites[0].dim):
                     theta_temp = theta_cut.take_slice([d_i, d_j], ['q0', 'q1']).replace_labels(('q0*', 'q1*'), ('q0', 'q1'))
-                    theta_temp.legs[theta_temp.get_leg_index('q0')].qconj = -1
-                    theta_temp.legs[theta_temp.get_leg_index('q1')].qconj = -1
+                    theta_temp.legs[theta_temp.get_leg_index('q0')] = theta_temp.legs[theta_temp.get_leg_index('q0')].flip_charges_qconj() 
+                    theta_temp.legs[theta_temp.get_leg_index('q1')] = theta_temp.legs[theta_temp.get_leg_index('q1')].flip_charges_qconj() 
                     theta_new, U_new = self.used_disentangler(theta_temp)
                     theta_new.ireplace_labels(('q0', 'q1'), ('q0*', 'q1*'))
                     theta_new.itranspose(['wL', 'p0', 'q0*', 'p1', 'q1*', 'wR'])
