@@ -552,3 +552,20 @@ class PurificationMPS(MPS):
         cp._transfermatrix_keep = self._transfermatrix_keep
         cp.segment_boundaries = self.segment_boundaries
         return cp
+
+    def expand_by(self, gam, insert_in_front=False):
+
+        gam_cp = gam.copy()
+        if insert_in_front:
+            self.sites = gam_cp.sites + self.sites
+            self._B = gam_cp._B + self._B
+            self._S = [1] + gam_cp._S[1:-1] + self._S[:-1] + [1]
+            self.form = gam_cp.form + self.form
+            self.test_sanity()
+        else:
+            self.sites = self.sites + gam_cp.sites
+            self._B = self._B + gam_cp._B
+            self._S = [self._S[0] * gam_cp._S[0]] + self._S[1:] + gam_cp._S[1:]
+            self.form = self.form + gam_cp.form
+            self.test_sanity()
+

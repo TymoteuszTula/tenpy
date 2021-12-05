@@ -437,7 +437,7 @@ class GradientDescentDisentangler(Disentangler):
         for t in self.stepsizes:
             U = npc.expm((-t) * dS).split_legs()  # dS anti-hermitian => exp(-tdS) unitary
             new_theta = npc.tensordot(U, theta, axes=[['q0*', 'q1*'], ['q0', 'q1']])
-            new_Ss.append(self._entropy_theta(new_theta, n))
+            new_Ss.append(self._entropy_theta(new_theta))
             new_thetas.append(new_theta)
             new_Us.append(U)
         a = np.argmin(new_Ss)
