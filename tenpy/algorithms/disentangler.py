@@ -123,10 +123,12 @@ class BackwardDisentangler_MPO(Disentangler):
         U_idx_dt, i = eng._update_index
         if eng.is_current_up:
             U = eng._U_up[U_idx_dt][i].conj()
+            U.ireplace_labels(['p0', 'p1', 'p0*', 'p1*'], ['q0*', 'q1*', 'q0', 'q1'])
+            theta = npc.tensordot(U, theta, axes=[['q0', 'q1'], ['q0*', 'q1*']])
         else:
             U = eng._U_down[U_idx_dt][i].conj() 
-        U.ireplace_labels(['p0*', 'p1*', 'p0', 'p1'], ['q0*', 'q1*', 'q0', 'q1'])
-        theta = npc.tensordot(U, theta, axes=[['q0*', 'q1*'], ['q0', 'q1']])
+            U.ireplace_labels(['p0', 'p1', 'p0*', 'p1*'], ['q0*', 'q1*', 'q0', 'q1'])
+            theta = npc.tensordot(U, theta, axes=[['q0*', 'q1*'], ['q0', 'q1']])
         return theta, U 
 
 
