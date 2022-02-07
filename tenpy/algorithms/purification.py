@@ -599,26 +599,28 @@ class PurificationTEBD_MPO(PurificationTEBD):
         theta_cut = theta.combine_legs([['p0', 'p0*'], ['p1', 'p1*']])
         theta_cut.ireplace_labels(['(p0.p0*)', '(p1.p1*)'], ['p0', 'p1'])
 
-        U_cut = None
+        # U_cut = None
 
         self.is_current_up = up
 
         if up:
-            for d_i in range(self.psi.sites[0].dim):
-                for d_j in range(self.psi.sites[0].dim):
-                    theta_temp = theta_cut.take_slice([d_i, d_j], ['q0', 'q1']).replace_labels(('q0*', 'q1*'), ('q0', 'q1'))
-                    theta_temp.legs[theta_temp.get_leg_index('q0')] = theta_temp.legs[theta_temp.get_leg_index('q0')].flip_charges_qconj() 
-                    theta_temp.legs[theta_temp.get_leg_index('q1')] = theta_temp.legs[theta_temp.get_leg_index('q1')].flip_charges_qconj() 
-                    theta_new, U_new = self.used_disentangler(theta_temp)
-                    theta_new.ireplace_labels(('q0', 'q1'), ('q0*', 'q1*'))
-                    theta_new.itranspose(['wL', 'p0', 'q0*', 'p1', 'q1*', 'wR'])
-                    theta_cut[:, :, d_i, :, :, d_j, :, :] = theta_new
-                    if d_i == 0 and d_j == 0 and U_new is not None:
-                        U_cut = U_new.copy()
-                        U_cut = U_cut.add_leg(self.psi.temp_leg_charge2, 0, axis=0, label='q1u')
-                        U_cut = U_cut.add_leg(self.psi.temp_leg_charge2, 0, axis=0, label='q0u')
-                    elif U_new is not None:
-                        U_cut[d_i, d_j, :, :] = U_new
+            # for d_i in range(self.psi.sites[0].dim):
+            #     for d_j in range(self.psi.sites[0].dim):
+            #         theta_temp = theta_cut.take_slice([d_i, d_j], ['q0', 'q1']).replace_labels(('q0*', 'q1*'), ('q0', 'q1'))
+            #         theta_temp.legs[theta_temp.get_leg_index('q0')] = theta_temp.legs[theta_temp.get_leg_index('q0')].flip_charges_qconj() 
+            #         theta_temp.legs[theta_temp.get_leg_index('q1')] = theta_temp.legs[theta_temp.get_leg_index('q1')].flip_charges_qconj() 
+            #         theta_new, U_new = self.used_disentangler(theta_temp)
+            #         theta_new.ireplace_labels(('q0', 'q1'), ('q0*', 'q1*'))
+            #         theta_new.itranspose(['wL', 'p0', 'q0*', 'p1', 'q1*', 'wR'])
+            #         theta_cut[:, :, d_i, :, :, d_j, :, :] = theta_new
+            #         if d_i == 0 and d_j == 0 and U_new is not None:
+            #             U_cut = U_new.copy()
+            #             U_cut = U_cut.add_leg(self.psi.temp_leg_charge2, 0, axis=0, label='q1u')
+            #             U_cut = U_cut.add_leg(self.psi.temp_leg_charge2, 0, axis=0, label='q0u')
+            #         elif U_new is not None:
+            #             U_cut[d_i, d_j, :, :] = U_new
+            
+
         else:
             for d_i in range(self.psi.sites[0].dim):
                 for d_j in range(self.psi.sites[0].dim):

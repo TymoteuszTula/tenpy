@@ -553,19 +553,38 @@ class PurificationMPS(MPS):
         cp.segment_boundaries = self.segment_boundaries
         return cp
 
+    # def expand_by(self, gam, insert_in_front=False):
+
+    #     gam_cp = gam.copy()
+    #     gam_cp.convert_form(new_form='G')
+    #     if insert_in_front:
+    #         self.sites = gam_cp.sites + self.sites
+    #         size_i = self._S[0].size
+    #         self._B = gam_cp._B + self._B
+    #         self._S = [np.ones(size_i)] + gam_cp._S[1:-1] + self._S[:-1] + [np.ones(size_i)]
+    #         self.form = gam_cp.form + self.form
+    #         self.test_sanity()
+    #     else:
+    #         self.sites = self.sites + gam_cp.sites
+    #         self._B = self._B + gam_cp._B
+    #         self._S = [self._S[0] * gam_cp._S[0]] + self._S[1:] + gam_cp._S[1:-1] + [self._S[-1] * gam_cp._S[-1]]
+    #         self.form = self.form + gam_cp.form
+    #         self.test_sanity()
+
     def expand_by(self, gam, insert_in_front=False):
 
         gam_cp = gam.copy()
         if insert_in_front:
             self.sites = gam_cp.sites + self.sites
+            size_i = self._S[0].size
             self._B = gam_cp._B + self._B
-            self._S = [1] + gam_cp._S[1:-1] + self._S[:-1] + [1]
+            self._S = gam_cp._S[:-1] + self._S
             self.form = gam_cp.form + self.form
-            self.test_sanity()
+            #self.test_sanity()
         else:
             self.sites = self.sites + gam_cp.sites
             self._B = self._B + gam_cp._B
-            self._S = [self._S[0] * gam_cp._S[0]] + self._S[1:] + gam_cp._S[1:]
+            self._S = self._S + gam_cp._S[1:] 
             self.form = self.form + gam_cp.form
-            self.test_sanity()
+            #self.test_sanity()
 
